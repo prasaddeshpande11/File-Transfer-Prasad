@@ -89,7 +89,10 @@ app.get('/', (req, res) => {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun.stunprotocol.org:3478' }
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' }
       ]
     };
 
@@ -160,7 +163,6 @@ app.get('/', (req, res) => {
       dataChannel.onopen = async () => {
         document.getElementById('senderStatus').innerText = 'P2P Connected! Streaming directly...';
         
-        // Send manifest first
         const manifest = selectedFiles.map(f => ({ name: f.name, size: f.size, type: f.type }));
         dataChannel.send(JSON.stringify({ type: 'manifest', manifest }));
 
@@ -171,26 +173,23 @@ app.get('/', (req, res) => {
           let chunkIndex = 0;
           const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 
-          // Tell receiver current file meta
           dataChannel.send(JSON.stringify({ type: 'file_meta', fileIndex: i, name: file.name, size: file.size, totalChunks }));
 
           while (offset < file.size) {
             const slice = file.slice(offset, offset + CHUNK_SIZE);
             const buffer = await slice.arrayBuffer();
 
-            // Send header then raw binary buffer over WebRTC channel
             const header = JSON.stringify({ type: 'chunk', fileIndex: i, chunkIndex });
             const headerEncoder = new TextEncoder();
             const headerBytes = headerEncoder.encode(header);
             
-            // Prefix packet with 4-byte length header for parsing
             const packet = new Uint8Array(4 + headerBytes.byteLength + buffer.byteLength);
             new DataView(packet.buffer).setUint32(0, headerBytes.byteLength);
             packet.set(headerBytes, 4);
             packet.set(new Uint8Array(buffer), 4 + headerBytes.byteLength);
 
             while (dataChannel.bufferedAmount > 16 * 1024 * 1024) {
-              await new Promise(r => setTimeout(r, 10)); // Flow control buffer throttle
+              await new Promise(r => setTimeout(r, 10));
             }
 
             dataChannel.send(packet);
@@ -246,7 +245,6 @@ app.get('/', (req, res) => {
           return;
         }
 
-        // Parse incoming binary packet
         const raw = event.data;
         const headerLen = new DataView(raw.slice(0, 4)).getUint32(0);
         const headerDecoder = new TextDecoder();
