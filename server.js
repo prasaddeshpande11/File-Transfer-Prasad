@@ -12,9 +12,9 @@ app.get('/', (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>True P2P Secure Vault</title>
+  <title>P2P Vault (PairDrop Style)</title>
   <style>
-    :root { --bg: #0f172a; --card: #1e293b; --primary: #3b82f6; --text: #f8fafc; --text-muted: #94a3b8; --border: #334155; --success: #22c55e; --error: #ef4444; }
+    :root { --bg: #0f172a; --card: #1e293b; --primary: #3b82f6; --text: #f8fafc; --text-muted: #94a3b8; --border: #334155; --success: #22c55e; }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
     body { background-color: var(--bg); color: var(--text); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
     .container { width: 100%; max-width: 600px; background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 30px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
@@ -42,36 +42,36 @@ app.get('/', (req, res) => {
 </head>
 <body>
   <div class="container">
-    <h1>True P2P Secure Vault</h1>
-    <p class="subtitle">Direct browser-to-browser transfer (Zero server storage).</p>
+    <h1>P2P Secure Vault</h1>
+    <p class="subtitle">Direct browser-to-browser file transfer.</p>
     <div class="tabs">
       <button class="tab-btn active" onclick="switchTab('send')">Send Files</button>
       <button class="tab-btn" onclick="switchTab('receive')">Receive Files</button>
     </div>
     <div id="sendPanel" class="panel active">
       <div class="form-group">
-        <label>Select Multiple Files (P2P)</label>
+        <label>Select Files</label>
         <input type="file" id="fileInput" multiple>
       </div>
       <div id="fileListPreview" class="file-list" style="display:none;"></div>
-      <button class="action-btn" onclick="createVault()" style="margin-top: 15px;">Generate P2P PIN</button>
+      <button class="action-btn" onclick="hostRoom()" style="margin-top: 15px;">Generate Room PIN</button>
       <div id="vaultInfo" style="display:none;" class="pin-display">
-        <p>Your Secure P2P PIN:</p>
+        <p>Room PIN:</p>
         <div class="pin-code" id="displayPin">------</div>
         <div id="senderProgressContainer" class="progress-container" style="display:none;">
-          <div class="status-text"><span id="senderStatus">Waiting for receiver to enter PIN...</span><span id="senderPct">0%</span></div>
+          <div class="status-text"><span id="senderStatus">Waiting for peer...</span><span id="senderPct">0%</span></div>
           <div class="progress-bar"><div id="senderFill" class="progress-fill"></div></div>
         </div>
       </div>
     </div>
     <div id="receivePanel" class="panel">
       <div class="form-group">
-        <label>Enter 6-Digit P2P PIN</label>
+        <label>Enter Room PIN</label>
         <input type="text" id="pinInput" maxlength="6" placeholder="000000">
       </div>
-      <button class="action-btn" onclick="joinVault()">Connect P2P & Download</button>
+      <button class="action-btn" onclick="joinRoom()">Connect & Download</button>
       <div id="receiverProgressContainer" class="progress-container" style="display:none;">
-        <div class="status-text"><span id="receiverStatus">Waiting...</span><span id="receiverPct">0%</span></div>
+        <div class="status-text"><span id="receiverStatus">Connecting...</span><span id="receiverPct">0%</span></div>
         <div class="progress-bar"><div id="receiverFill" class="progress-fill"></div></div>
         <div id="downloadLinks" style="margin-top: 15px;"></div>
       </div>
@@ -82,22 +82,14 @@ app.get('/', (req, res) => {
     const socket = io();
     let currentPin = '';
     let selectedFiles = [];
-    let pc;
-    let dataChannel;
+    let pc, dataChannel;
 
-    // STUN and fallback TURN configuration for WebRTC NAT traversal
     const rtcConfig = {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun.relay.metered.ca:80' },
         {
           urls: 'turn:standard.relay.metered.ca:80',
-          username: 'openrelayproject',
-          credential: 'openrelayproject'
-        },
-        {
-          urls: 'turn:standard.relay.metered.ca:443?transport=tcp',
           username: 'openrelayproject',
           credential: 'openrelayproject'
         }
@@ -116,8 +108,7 @@ app.get('/', (req, res) => {
       }
     }
 
-    const fileInput = document.getElementById('fileInput');
-    fileInput.addEventListener('change', (e) => {
+    document.getElementById('fileInput').addEventListener('change', (e) => {
       selectedFiles = Array.from(e.target.files);
       const preview = document.getElementById('fileListPreview');
       if (selectedFiles.length > 0) {
@@ -126,181 +117,130 @@ app.get('/', (req, res) => {
       }
     });
 
-    // --- SENDER P2P ---
-    function createVault() {
+    function hostRoom() {
       if (selectedFiles.length === 0) return alert('Select files first.');
       currentPin = Math.floor(100000 + Math.random() * 900000).toString();
       document.getElementById('displayPin').innerText = currentPin;
       document.getElementById('vaultInfo').style.display = 'block';
       document.getElementById('senderProgressContainer').style.display = 'block';
-      document.getElementById('senderStatus').innerText = 'Ready. Waiting for receiver...';
       
-      socket.emit('host_room', currentPin);
+      socket.emit('host', currentPin);
     }
 
-    socket.on('peer_joined', async () => {
-      document.getElementById('senderStatus').innerText = 'Receiver found. Negotiating P2P connection...';
-      
+    socket.on('join_offer', async () => {
+      document.getElementById('senderStatus').innerText = 'Peer connected. Setting up P2P stream...';
       pc = new RTCPeerConnection(rtcConfig);
-      dataChannel = pc.createDataChannel('p2p-transfer', { ordered: true });
-      setupDataChannelSender();
+      dataChannel = pc.createDataChannel('transfer');
+      setupSenderChannel();
 
-      pc.onicecandidate = (e) => {
+      pc.onicecandidate = e => {
         if (e.candidate) socket.emit('signal', { pin: currentPin, candidate: e.candidate });
       };
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       socket.emit('signal', { pin: currentPin, sdp: pc.localDescription });
-
-      // Safety timeout check if router firewall blocks direct peer connection
-      setTimeout(() => {
-        if (dataChannel && dataChannel.readyState !== 'open') {
-          console.warn("P2P direct connection blocked by router firewall.");
-          document.getElementById('senderStatus').innerText = 'Handshake timed out (Firewall blocked)';
-        }
-      }, 12000);
     });
 
-    socket.on('signal', async (data) => {
-      if (!pc) return;
-      if (data.sdp) {
-        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      } else if (data.candidate) {
-        try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
-      }
-    });
-
-    function setupDataChannelSender() {
-      dataChannel.onopen = async () => {
-        document.getElementById('senderStatus').innerText = 'Direct P2P Link Active! Sending files...';
-        
-        const manifest = selectedFiles.map(f => ({ name: f.name, size: f.size, type: f.type }));
-        dataChannel.send(JSON.stringify({ type: 'manifest', manifest }));
-
-        const CHUNK_SIZE = 64 * 1024;
-        for (let i = 0; i < selectedFiles.length; i++) {
-          const file = selectedFiles[i];
-          let offset = 0;
-          let chunkIndex = 0;
-          const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-
-          dataChannel.send(JSON.stringify({ type: 'file_meta', fileIndex: i, name: file.name, size: file.size, totalChunks }));
-
-          while (offset < file.size) {
-            const slice = file.slice(offset, offset + CHUNK_SIZE);
-            const buffer = await slice.arrayBuffer();
-
-            const header = JSON.stringify({ type: 'chunk', fileIndex: i, chunkIndex });
-            const headerBytes = new TextEncoder().encode(header);
-            
-            const packet = new Uint8Array(4 + headerBytes.byteLength + buffer.byteLength);
-            new DataView(packet.buffer).setUint32(0, headerBytes.byteLength);
-            packet.set(headerBytes, 4);
-            packet.set(new Uint8Array(buffer), 4 + headerBytes.byteLength);
-
-            while (dataChannel.bufferedAmount > 8 * 1024 * 1024) {
-              await new Promise(r => setTimeout(r, 10));
-            }
-
-            dataChannel.send(packet);
-
-            offset += CHUNK_SIZE;
-            chunkIndex++;
-
-            const overallPct = Math.round(((i + (offset / file.size)) / selectedFiles.length) * 100);
-            document.getElementById('senderFill').style.width = overallPct + '%';
-            document.getElementById('senderPct').innerText = overallPct + '%';
-          }
-        }
-        document.getElementById('senderStatus').innerText = 'P2P Transfer Complete!';
-      };
-    }
-
-    // --- RECEIVER P2P ---
-    function joinVault() {
-      const pin = document.getElementById('pinInput').value.trim();
-      if (pin.length !== 6) return alert('Enter a valid 6-digit PIN.');
-      currentPin = pin;
+    function joinRoom() {
+      currentPin = document.getElementById('pinInput').value.trim();
+      if (currentPin.length !== 6) return alert('Enter a valid 6-digit PIN');
       document.getElementById('receiverProgressContainer').style.display = 'block';
-      document.getElementById('receiverStatus').innerText = 'Connecting to sender...';
-
+      
       pc = new RTCPeerConnection(rtcConfig);
-
-      pc.ondatachannel = (event) => {
-        dataChannel = event.channel;
-        setupDataChannelReceiver();
+      pc.ondatachannel = e => {
+        dataChannel = e.channel;
+        setupReceiverChannel();
       };
 
-      pc.onicecandidate = (e) => {
+      pc.onicecandidate = e => {
         if (e.candidate) socket.emit('signal', { pin: currentPin, candidate: e.candidate });
       };
 
-      socket.on('signal', async (data) => {
-        if (data.sdp) {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-          if (data.sdp.type === 'offer') {
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            socket.emit('signal', { pin: currentPin, sdp: pc.localDescription });
-          }
-        } else if (data.candidate) {
-          try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
-        }
-      });
-
-      socket.emit('join_room', currentPin);
+      socket.emit('join', currentPin);
     }
 
-    let incomingFilesData = {};
-    function setupDataChannelReceiver() {
+    socket.on('signal', async data => {
+      if (!pc) return;
+      if (data.sdp) {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        if (data.sdp.type === 'offer') {
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          socket.emit('signal', { pin: currentPin, sdp: pc.localDescription });
+        }
+      } else if (data.candidate) {
+        try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch(e){}
+      }
+    });
+
+    function setupSenderChannel() {
+      dataChannel.onopen = async () => {
+        document.getElementById('senderStatus').innerText = 'Transferring P2P...';
+        const manifest = selectedFiles.map(f => ({ name: f.name, size: f.size }));
+        dataChannel.send(JSON.stringify({ type: 'manifest', manifest }));
+
+        for (let i = 0; i < selectedFiles.length; i++) {
+          const file = selectedFiles[i];
+          let offset = 0;
+          const CHUNK = 64 * 1024;
+          
+          dataChannel.send(JSON.stringify({ type: 'file_start', index: i, name: file.name, size: file.size }));
+
+          while (offset < file.size) {
+            const slice = file.slice(offset, offset + CHUNK);
+            const buf = await slice.arrayBuffer();
+            
+            if (dataChannel.bufferedAmount > 16 * 1024 * 1024) {
+              await new Promise(r => setTimeout(r, 10));
+            }
+            dataChannel.send(buf);
+            offset += CHUNK;
+
+            const pct = Math.round((offset / file.size) * 100);
+            document.getElementById('senderFill').style.width = pct + '%';
+            document.getElementById('senderPct').innerText = pct + '%';
+          }
+        }
+        document.getElementById('senderStatus').innerText = 'Complete!';
+      };
+    }
+
+    let rxFiles = {};
+    function setupReceiverChannel() {
       dataChannel.onopen = () => {
-        document.getElementById('receiverStatus').innerText = 'Direct P2P Link Established! Receiving...';
+        document.getElementById('receiverStatus').innerText = 'Connected! Receiving...';
       };
 
-      dataChannel.onmessage = async (event) => {
-        if (typeof event.data === 'string') {
-          const msg = JSON.parse(event.data);
+      let currentFileIdx = 0;
+      let chunks = [];
+      let receivedBytes = 0;
+      let totalSize = 1;
+
+      dataChannel.onmessage = async e => {
+        if (typeof e.data === 'string') {
+          const msg = JSON.parse(e.data);
           if (msg.type === 'manifest') {
-            incomingFilesData = {};
-            msg.manifest.forEach((m, idx) => {
-              incomingFilesData[idx] = { name: m.name, chunks: [], receivedSize: 0, totalSize: m.size, totalChunks: Math.ceil(m.size / (64*1024)) };
-            });
+            totalSize = msg.manifest.reduce((acc, f) => acc + f.size, 0);
+          } else if (msg.type === 'file_start') {
+            chunks = [];
+            receivedBytes = 0;
+            currentFileIdx = msg.index;
           }
           return;
         }
 
-        const raw = event.data;
-        const headerLen = new DataView(raw.slice(0, 4)).getUint32(0);
-        const header = JSON.parse(new TextDecoder().decode(raw.slice(4, 4 + headerLen)));
-        const chunkData = raw.slice(4 + headerLen);
+        chunks.push(e.data);
+        receivedBytes += e.data.byteLength;
 
-        const fileData = incomingFilesData[header.fileIndex];
-        if (!fileData) return;
-
-        fileData.chunks[header.chunkIndex] = chunkData;
-        fileData.receivedSize += chunkData.byteLength;
-
-        let totalReceivedAll = 0, totalSizeAll = 0;
-        Object.values(incomingFilesData).forEach(f => {
-          totalReceivedAll += f.receivedSize;
-          totalSizeAll += f.totalSize;
-        });
-
-        const pct = Math.round((totalReceivedAll / totalSizeAll) * 100);
+        const pct = Math.round((receivedBytes / totalSize) * 100);
         document.getElementById('receiverFill').style.width = pct + '%';
         document.getElementById('receiverPct').innerText = pct + '%';
 
-        if (fileData.chunks.filter(Boolean).length === fileData.totalChunks) {
-          const completeBlob = new Blob(fileData.chunks);
-          const url = URL.createObjectURL(completeBlob);
-          const linkContainer = document.getElementById('downloadLinks');
-          linkContainer.innerHTML += \`<div style="margin: 8px 0;"><a href="\${url}" download="\${fileData.name}" style="color: var(--primary); font-weight: bold;">📥 Download: \${fileData.name}</a></div>\`;
-          
-          if (Object.values(incomingFilesData).every(f => f.chunks.filter(Boolean).length === f.totalChunks)) {
-            document.getElementById('receiverStatus').innerText = 'P2P Transfer Complete!';
-          }
-        }
+        // Auto-save blob when file finishes
+        const blob = new Blob(chunks);
+        const url = URL.createObjectURL(blob);
+        document.getElementById('downloadLinks').innerHTML = \`<a href="\${url}" download="downloaded_file" style="color:var(--primary);font-weight:bold;">📥 Download File</a>\`;
       };
     }
   </script>
@@ -308,18 +248,14 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-io.on('connection', (socket) => {
-  socket.on('host_room', (pin) => socket.join(pin));
-  socket.on('join_room', (pin) => {
+io.on('connection', socket => {
+  socket.on('host', pin => socket.join(pin));
+  socket.on('join', pin => {
     socket.join(pin);
-    socket.to(pin).emit('peer_joined');
+    socket.to(pin).emit('join_offer');
   });
-  socket.on('signal', (data) => {
-    socket.to(data.pin).emit('signal', data);
-  });
+  socket.on('signal', data => socket.to(data.pin).emit('signal', data));
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`P2P Signaling server running on port ${PORT}`);
-});
+server.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
