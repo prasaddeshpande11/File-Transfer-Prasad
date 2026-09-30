@@ -14,7 +14,7 @@ app.get('/', (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>True P2P Secure Vault</title>
   <style>
-    :root { --bg: #0f172a; --card: #1e293b; --primary: #3b82f6; --text: #f8fafc; --text-muted: #94a3b8; --border: #334155; --success: #22c55e; }
+    :root { --bg: #0f172a; --card: #1e293b; --primary: #3b82f6; --text: #f8fafc; --text-muted: #94a3b8; --border: #334155; --success: #22c55e; --error: #ef4444; }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
     body { background-color: var(--bg); color: var(--text); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
     .container { width: 100%; max-width: 600px; background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 30px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
@@ -85,7 +85,6 @@ app.get('/', (req, res) => {
     let pc;
     let dataChannel;
 
-    // STUN + Fallback TURN Configuration to bypass strict Wi-Fi NAT
     const rtcConfig = {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -138,7 +137,6 @@ app.get('/', (req, res) => {
       socket.emit('host_room', currentPin);
     }
 
-    // Triggered ONLY after receiver has officially joined the room
     socket.on('peer_joined', async () => {
       document.getElementById('senderStatus').innerText = 'Receiver found. Negotiating P2P connection...';
       
@@ -153,6 +151,14 @@ app.get('/', (req, res) => {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       socket.emit('signal', { pin: currentPin, sdp: pc.localDescription });
+
+      // Inside sender code: safety timeout check
+      setTimeout(() => {
+        if (dataChannel && dataChannel.readyState !== 'open') {
+          console.warn("P2P direct connection blocked by router firewall.");
+          document.getElementById('senderStatus').innerText = 'Handshake timed out (Firewall blocked)';
+        }
+      }, 10000);
     });
 
     socket.on('signal', async (data) => {
