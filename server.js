@@ -43,7 +43,7 @@ app.get('/', (req, res) => {
 <body>
   <div class="container">
     <h1>True P2P Secure Vault</h1>
-    <p class="subtitle">Direct browser-to-browser transfer (Zero server data storage).</p>
+    <p class="subtitle">Direct browser-to-browser transfer (Zero server storage).</p>
     <div class="tabs">
       <button class="tab-btn active" onclick="switchTab('send')">Send Files</button>
       <button class="tab-btn" onclick="switchTab('receive')">Receive Files</button>
@@ -85,6 +85,7 @@ app.get('/', (req, res) => {
     let pc;
     let dataChannel;
 
+    // STUN and fallback TURN configuration for WebRTC NAT traversal
     const rtcConfig = {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -152,13 +153,13 @@ app.get('/', (req, res) => {
       await pc.setLocalDescription(offer);
       socket.emit('signal', { pin: currentPin, sdp: pc.localDescription });
 
-      // Inside sender code: safety timeout check
+      // Safety timeout check if router firewall blocks direct peer connection
       setTimeout(() => {
         if (dataChannel && dataChannel.readyState !== 'open') {
           console.warn("P2P direct connection blocked by router firewall.");
           document.getElementById('senderStatus').innerText = 'Handshake timed out (Firewall blocked)';
         }
-      }, 10000);
+      }, 12000);
     });
 
     socket.on('signal', async (data) => {
