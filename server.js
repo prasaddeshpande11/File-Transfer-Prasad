@@ -43,7 +43,7 @@ app.get('/', (req, res) => {
 <body>
   <div class="container">
     <h1>True P2P Secure Vault</h1>
-    <p class="subtitle">Direct browser-to-browser WebRTC transfer via 6-digit PIN.</p>
+    <p class="subtitle">Direct browser-to-browser transfer (Zero server data storage).</p>
     <div class="tabs">
       <button class="tab-btn active" onclick="switchTab('send')">Send Files</button>
       <button class="tab-btn" onclick="switchTab('receive')">Receive Files</button>
@@ -59,7 +59,7 @@ app.get('/', (req, res) => {
         <p>Your Secure P2P PIN:</p>
         <div class="pin-code" id="displayPin">------</div>
         <div id="senderProgressContainer" class="progress-container" style="display:none;">
-          <div class="status-text"><span id="senderStatus">Connecting P2P peer...</span><span id="senderPct">0%</span></div>
+          <div class="status-text"><span id="senderStatus">Waiting for receiver to enter PIN...</span><span id="senderPct">0%</span></div>
           <div class="progress-bar"><div id="senderFill" class="progress-fill"></div></div>
         </div>
       </div>
@@ -71,7 +71,7 @@ app.get('/', (req, res) => {
       </div>
       <button class="action-btn" onclick="joinVault()">Connect P2P & Download</button>
       <div id="receiverProgressContainer" class="progress-container" style="display:none;">
-        <div class="status-text"><span id="receiverStatus">Establishing direct P2P link...</span><span id="receiverPct">0%</span></div>
+        <div class="status-text"><span id="receiverStatus">Waiting...</span><span id="receiverPct">0%</span></div>
         <div class="progress-bar"><div id="receiverFill" class="progress-fill"></div></div>
         <div id="downloadLinks" style="margin-top: 15px;"></div>
       </div>
@@ -85,14 +85,22 @@ app.get('/', (req, res) => {
     let pc;
     let dataChannel;
 
+    // STUN + Fallback TURN Configuration to bypass strict Wi-Fi NAT
     const rtcConfig = {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' },
-        { urls: 'stun:global.stun.twilio.com:3478' }
+        { urls: 'stun:stun.relay.metered.ca:80' },
+        {
+          urls: 'turn:standard.relay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          urls: 'turn:standard.relay.metered.ca:443?transport=tcp',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        }
       ]
     };
 
@@ -118,16 +126,22 @@ app.get('/', (req, res) => {
       }
     });
 
-    // --- SENDER P2P SETUP ---
-    async function createVault() {
+    // --- SENDER P2P ---
+    function createVault() {
       if (selectedFiles.length === 0) return alert('Select files first.');
       currentPin = Math.floor(100000 + Math.random() * 900000).toString();
       document.getElementById('displayPin').innerText = currentPin;
       document.getElementById('vaultInfo').style.display = 'block';
       document.getElementById('senderProgressContainer').style.display = 'block';
-
+      document.getElementById('senderStatus').innerText = 'Ready. Waiting for receiver...';
+      
       socket.emit('host_room', currentPin);
+    }
 
+    // Triggered ONLY after receiver has officially joined the room
+    socket.on('peer_joined', async () => {
+      document.getElementById('senderStatus').innerText = 'Receiver found. Negotiating P2P connection...';
+      
       pc = new RTCPeerConnection(rtcConfig);
       dataChannel = pc.createDataChannel('p2p-transfer', { ordered: true });
       setupDataChannelSender();
@@ -139,21 +153,12 @@ app.get('/', (req, res) => {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       socket.emit('signal', { pin: currentPin, sdp: pc.localDescription });
-    }
-
-    socket.on('peer_joined', async () => {
-      document.getElementById('senderStatus').innerText = 'Peer joined. Handshaking P2P...';
     });
 
     socket.on('signal', async (data) => {
       if (!pc) return;
       if (data.sdp) {
         await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        if (data.sdp.type === 'offer') {
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          socket.emit('signal', { pin: currentPin, sdp: pc.localDescription });
-        }
       } else if (data.candidate) {
         try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
       }
@@ -161,7 +166,7 @@ app.get('/', (req, res) => {
 
     function setupDataChannelSender() {
       dataChannel.onopen = async () => {
-        document.getElementById('senderStatus').innerText = 'P2P Connected! Streaming directly...';
+        document.getElementById('senderStatus').innerText = 'Direct P2P Link Active! Sending files...';
         
         const manifest = selectedFiles.map(f => ({ name: f.name, size: f.size, type: f.type }));
         dataChannel.send(JSON.stringify({ type: 'manifest', manifest }));
@@ -180,15 +185,14 @@ app.get('/', (req, res) => {
             const buffer = await slice.arrayBuffer();
 
             const header = JSON.stringify({ type: 'chunk', fileIndex: i, chunkIndex });
-            const headerEncoder = new TextEncoder();
-            const headerBytes = headerEncoder.encode(header);
+            const headerBytes = new TextEncoder().encode(header);
             
             const packet = new Uint8Array(4 + headerBytes.byteLength + buffer.byteLength);
             new DataView(packet.buffer).setUint32(0, headerBytes.byteLength);
             packet.set(headerBytes, 4);
             packet.set(new Uint8Array(buffer), 4 + headerBytes.byteLength);
 
-            while (dataChannel.bufferedAmount > 16 * 1024 * 1024) {
+            while (dataChannel.bufferedAmount > 8 * 1024 * 1024) {
               await new Promise(r => setTimeout(r, 10));
             }
 
@@ -206,17 +210,16 @@ app.get('/', (req, res) => {
       };
     }
 
-    // --- RECEIVER P2P SETUP ---
+    // --- RECEIVER P2P ---
     function joinVault() {
       const pin = document.getElementById('pinInput').value.trim();
-      if (pin.length !== 6) return alert('Enter valid PIN.');
+      if (pin.length !== 6) return alert('Enter a valid 6-digit PIN.');
       currentPin = pin;
       document.getElementById('receiverProgressContainer').style.display = 'block';
-      
-      socket.emit('join_room', currentPin);
+      document.getElementById('receiverStatus').innerText = 'Connecting to sender...';
 
       pc = new RTCPeerConnection(rtcConfig);
-      
+
       pc.ondatachannel = (event) => {
         dataChannel = event.channel;
         setupDataChannelReceiver();
@@ -225,12 +228,27 @@ app.get('/', (req, res) => {
       pc.onicecandidate = (e) => {
         if (e.candidate) socket.emit('signal', { pin: currentPin, candidate: e.candidate });
       };
+
+      socket.on('signal', async (data) => {
+        if (data.sdp) {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+          if (data.sdp.type === 'offer') {
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket.emit('signal', { pin: currentPin, sdp: pc.localDescription });
+          }
+        } else if (data.candidate) {
+          try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
+        }
+      });
+
+      socket.emit('join_room', currentPin);
     }
 
     let incomingFilesData = {};
     function setupDataChannelReceiver() {
       dataChannel.onopen = () => {
-        document.getElementById('receiverStatus').innerText = 'P2P Tunnel Active. Receiving...';
+        document.getElementById('receiverStatus').innerText = 'Direct P2P Link Established! Receiving...';
       };
 
       dataChannel.onmessage = async (event) => {
@@ -247,8 +265,7 @@ app.get('/', (req, res) => {
 
         const raw = event.data;
         const headerLen = new DataView(raw.slice(0, 4)).getUint32(0);
-        const headerDecoder = new TextDecoder();
-        const header = JSON.parse(headerDecoder.decode(raw.slice(4, 4 + headerLen)));
+        const header = JSON.parse(new TextDecoder().decode(raw.slice(4, 4 + headerLen)));
         const chunkData = raw.slice(4 + headerLen);
 
         const fileData = incomingFilesData[header.fileIndex];
